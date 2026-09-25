@@ -12,11 +12,11 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+
       - name: Set up Python 3.12
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v5
         with:
           python-version: 3.12
-          cache: "pip" # remember libraries installed with pip
 
       - name: Check code style with ruff
         uses: astral-sh/ruff-action@v3
@@ -27,10 +27,11 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v3
+        uses: actions/setup-python@v5
         with:
           python-version: 3.12
           cache: "pip" # remember libraries installed with pip
+          cache-dependency-path: requirements.txt # path to requirements file for pip caching
 
       - name: Install dependencies
         run: |
