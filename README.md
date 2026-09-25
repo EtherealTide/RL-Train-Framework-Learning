@@ -29,18 +29,17 @@ The goal is not merely calling pre-packaged APIs, but mastering the architectura
 ## 📅 Progress Tracker
 
 ### Week 1: Algorithmic Core & Execution Flow
-- [x] **Day 01: Gymnasium & Minimal RL Pipeline**
+- **Day 01: Gymnasium & Minimal RL Pipeline**
   - Implemented 1D navigation environment (`LineWorldEnv`) adhering to Gymnasium API standards.
   - Clarified semantics of `terminated` (environment goal/hazard) vs. `truncated` (horizon timeout / bootstrap required).
   - Built trajectory collection loop and reversed discounted return ($G_t$) calculation.
-- [ ] **Day 02: Native REINFORCE (Policy Gradient)**
-  - Implement policy network, trajectory log-probability tracking, and Monte Carlo policy gradient loss.
-- [ ] **Day 03: Actor-Critic & Generalized Advantage Estimation (GAE)**
-  - Value baseline fitting, $\delta_t$ temporal-difference residual, and reverse-scan GAE computation.
-- [ ] **Day 04: CleanRL PPO Deep Dive**
-  - Single-file PPO analysis: clipping objective, entropy bonus, KL divergence diagnostics, explained variance.
-- [ ] **Day 05: On-Policy (PPO) vs. Off-Policy (SAC)**
-  - Replay buffer design, twin Q-critics, soft target updates, and entropy temperature tuning.
+- **Day 02: Native REINFORCE (Policy Gradient)**
+  - Implemented a PyTorch policy network for discrete action spaces.
+  - Sampled actions using torch.distributions.Categorical.
+  - Preserved trajectory log-probabilities for autograd.
+  - Implemented Monte Carlo REINFORCE policy loss.
+  - Compared policy probabilities before and after training.
+  - Evaluated deterministic success rate after policy optimization.
 
 ---
 
@@ -52,4 +51,4 @@ The goal is not merely calling pre-packaged APIs, but mastering the architectura
 ├── README.md
 └── Gymnasium-MiniRL/
     ├── minimal_env.py      # Custom Gymnasium environment implementation
-    └── run_trajectory.py   # Baseline trajectory collection & return evaluation
+    └── reinforce.py         # Minimal REINFORCE algorithm implementation
