@@ -41,18 +41,28 @@ The goal is not merely calling pre-packaged APIs, but mastering the architectura
   - Compared policy probabilities before and after training.
   - Evaluated deterministic success rate after policy optimization.
 - **Day 03: Actor-Critic & Generalized Advantage Estimation**
-  - Replaced the standalone policy network with a shared Actor-Critic architecture.
-  - Implemented state-value estimation V(s) using a critic head.
-  - Implemented one-step TD residual:
-    `delta_t = r_t + gamma * V(s_{t+1}) - V(s_t)`.
-  - Implemented reverse-scan Generalized Advantage Estimation (GAE).
-  - Used GAE advantages for policy-gradient updates.
-  - Trained the critic using bootstrapped value targets.
-  - Correctly distinguished Gymnasium `terminated` and `truncated`
-    semantics during value bootstrapping.
-  - Added advantage normalization, entropy bonus, and gradient clipping.
-  - Logged actor loss, critic loss, entropy, advantage statistics,
-    value estimates, success rate, and episode length.
+  - **Basic task — LineWorld Actor-Critic:**
+    - Replaced the standalone policy network with a shared Actor-Critic network.
+    - Implemented the correct TD residual:
+      `delta_t = r_t + gamma * V(s_{t+1}) - V(s_t)`.
+    - Implemented reverse-scan GAE and bootstrapped value targets.
+    - Correctly separated Gymnasium `terminated` and `truncated` semantics.
+    - Added advantage normalization, entropy regularization, gradient clipping,
+      and training diagnostics.
+  - **Improved experiment — CartPole-200:**
+    - Moved from the one-dimensional LineWorld task to a four-dimensional
+      CartPole control task.
+    - Used a shared feature layer followed by private actor and critic towers.
+    - Separated rollout collection from gradient computation.
+    - Combined four episodes in each update and normalized advantages over the
+      complete batch.
+    - Replaced critic MSE with Huber loss and reduced the critic loss weight.
+    - Used orthogonal initialization and linear learning-rate decay.
+    - Reached a deterministic evaluation score of `200/200` for every
+      evaluation from episode 800 through episode 2000 in the final seed-42 run.
+    - See the full experiment record in
+      [Day 3 Improvement Report](Gymnasium-MiniRL/DAY3_IMPROVEMENT_REPORT.md).
+
 ---
 
 ## 🛠️ Repository Structure
@@ -66,7 +76,8 @@ The goal is not merely calling pre-packaged APIs, but mastering the architectura
 │   └── workflows/
 │       └── ci.yml          # GitHub Actions CI workflow for linting and testing
 └── Gymnasium-MiniRL/
-    ├── minimal_env.py      # Custom Gymnasium environment implementation
-    ├── reinforce.py         # Minimal REINFORCE algorithm implementation
-    └── actor_critic_gae.py  # Actor-Critic with GAE implementation
+    ├── minimal_env.py                  # LineWorld and CartPole environment setup
+    ├── reinforce.py                    # Batched GAE Actor-Critic training loop
+    ├── actor_critic_gae.py             # Reverse-scan GAE implementation
+    └── DAY3_IMPROVEMENT_REPORT.md      # Detailed Day 3 experiment record
 ```

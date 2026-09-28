@@ -74,3 +74,16 @@ class LineWorldEnv(gym.Env):
         info = {"position": self.position}
 
         return obs, reward, terminated, truncated, info
+
+
+def make_cartpole_env(max_steps: int = 200):
+    """
+    cartpole observation: 4 dimension
+    [cart_position, cart_velociy, pole_angle, pole_angular_velocity]
+
+    action: 1 means push cart right, 0 means push cart left
+
+    truncated episode: success
+    terminated episode: fail
+    """
+    return gym.make("CartPole-v1", max_episode_steps=max_steps)

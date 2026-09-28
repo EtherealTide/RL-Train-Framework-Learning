@@ -1,9 +1,11 @@
 import random
 
+import gymnasium as gym
 import numpy as np
 import torch
+import torch.nn.functional as F
 from actor_critic_gae import gae
-from minimal_env import LineWorldEnv
+from minimal_env import make_cartpole_env
 from torch import nn, optim
 from torch.distributions import Categorical
 
@@ -14,9 +16,9 @@ class ActorCriticNetwork(nn.Module):
     an Actor-Critic network with shared backbone
 
     input:
-        observation, shape=[batch_size,1]
+        observation, shape=[batch_size,obs_dim]
     output:
-        actor_logits, shape=[batch_size,2]
+        actor_logits, shape=[batch_size,action_dim]
         value, shape=[batch_size]
         notice that there is no softmax in the end
     """
@@ -25,61 +27,76 @@ class ActorCriticNetwork(nn.Module):
         super().__init__()
         # backbone is usually used to extract features
         self.backbone = nn.Sequential(nn.Linear(obs_dim, hidden_dim), nn.Tanh())
+        # actor tower
+        self.actor_tower = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.Tanh())
+        # critic tower
+        self.critic_tower = nn.Sequential(nn.Linear(hidden_dim, hidden_dim), nn.Tanh())
+
         # actor head
         self.actor_head = nn.Linear(hidden_dim, action_dim)
         # critic head
         self.critic_head = nn.Linear(hidden_dim, critic_dim)
 
+        # initialize
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        """
+        正交初始化Orthogonal initialization是on-policy强化学习的常见初始化选择
+
+        隐藏层采用sqrt(2)的增益
+        actor网络的输出层使用小的增益确保接近均匀分布
+        critic网络的输出层使用增益1
+        """
+        for module in (self.backbone, self.actor_tower, self.critic_tower):
+            for layer in module:
+                if isinstance(layer, nn.Linear):
+                    nn.init.orthogonal_(layer.weight, gain=np.sqrt(2.0))
+                    nn.init.zeros_(layer.bias)
+        nn.init.orthogonal_(self.actor_head.weight, gain=0.01)
+        nn.init.zeros_(self.actor_head.bias)
+        nn.init.orthogonal_(self.critic_head.weight, gain=1.0)
+        nn.init.zeros_(self.critic_head.bias)
+
     def forward(self, obs):
         features = self.backbone(obs)
-        logits = self.actor_head(features)
-        value = self.critic_head(features).squeeze(-1)  # [batch,1]->[batch]
+        actor_features = self.actor_tower(features)
+        critic_features = self.critic_tower(features)
+        logits = self.actor_head(actor_features)
+        value = self.critic_head(critic_features).squeeze(-1)  # [batch,1]->[batch]
         return logits, value
 
 
-# choose action from output of actor network, estimate value from output of critic network
+@torch.no_grad()
 def select_action(model: ActorCriticNetwork, obs):
     """
-    input:
-        model: actor-critic network
-        obs: numpy returned by Gymnasium  type:numpy array requested by gym
+    Sample an action during rollout
 
-    output:
-        action: sample an action under probability distribution of action space
-        log_prob: the probability of chosen action
-        value: the estimated value of current state output by critic network
-        entropy
+    Rollout does not construct an autograd graph. Log Prob, values, and
+    entropy will be computed in the update phase.
     """
-    obs_tensor = torch.as_tensor(obs, dtype=torch.float32)
-    # increase dimension of obs_tensor using unsqueeze because neural network usually accept:
-    # [batch_size, feature_dim]
-    obs_tensor = obs_tensor.unsqueeze(0)
-
-    logits, value = model(obs_tensor)
-    dist = Categorical(logits=logits)
-    action_tensor = dist.sample()
-    log_prob = dist.log_prob(action_tensor)
-    entropy = dist.entropy()  # 熵
-    action = (
-        action_tensor.item()
-    )  # action is only sent to Gym without participating upgrade of network
-    log_prob = log_prob.squeeze(0)
-    return action, log_prob, value.squeeze(0), entropy.squeeze(0)
+    obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+    logits, _ = model(obs_tensor)
+    distribution = Categorical(logits=logits)
+    action = distribution.sample()
+    return int(action.item())
 
 
 def update_actor_critic(
     optimizer: torch.optim,
     model: ActorCriticNetwork,
-    trajectory: dict,
-    bootstrap_value,
+    trajectories: list[dict],
     gamma=0.95,
     gae_lambda=0.95,
-    value_coef=0.5,
-    entropy_coef=0.01,
+    value_coef=0.1,
+    entropy_coef=0.001,
 ):
     """
-    Loss Equation: loss=actor_loss+value_coef*critic_loss-entropy_coef*entropy
-                       =sum(A*log_prob)+value_coef*||returns-values||-entropy_coef*entropy(distribution)
+    Total loss:
+
+    actor_loss
+    + value_coef * Huber(values, value_targets)
+    - entropy_coef * entropy
     input:
         optimizer: Adam or SGD
         model: Actor-Critic network, used in gradient clipping
@@ -92,27 +109,57 @@ def update_actor_critic(
     output:
         loss, advantages, grad
     """
-    log_probs_tensor = torch.stack(trajectory["log_probs"])
-    values = torch.stack(trajectory["values"])
-    entropies = torch.stack(trajectory["entropies"])
-    # gae
-    advantages, returns = gae(
-        trajectory["rewards"],
-        values,
-        trajectory["terminated"],
-        bootstrap_value,
-        gamma,
-        gae_lambda,
+    episode_lengths = [len(trajectory["rewards"]) for trajectory in trajectories]
+    observations = torch.as_tensor(
+        np.concatenate(
+            [np.asarray(trajectory["observations"]) for trajectory in trajectories],
+            axis=0,
+        ),
+        dtype=torch.float32,
     )
+    actions = torch.as_tensor(
+        np.concatenate(
+            [np.asarray(trajectory["actions"]) for trajectory in trajectories],
+            axis=0,
+        ),
+        dtype=torch.long,
+    )
+    # Run the complete multi-episode batch through the network once
+    logits, values = model(observations)
+    distribution = Categorical(logits=logits)
+    log_probs_tensor = distribution.log_prob(actions)
+    entropies = distribution.entropy()
+    # GAE must be calculated independently inside every episode
+    advantages_buffer = []
+    returns_buffer = []
+    start_index = 0
+    for trajectory, episode_length in zip(trajectories, episode_lengths):
+        end_index = start_index + episode_length
+        episode_values = values[start_index:end_index]
+        bootstrap_value = compute_bootstrap_value(model, trajectory)
+        episode_advantages, episode_returns = gae(
+            trajectory["rewards"],
+            episode_values,
+            trajectory["terminated"],
+            bootstrap_value,
+            gamma,
+            gae_lambda,
+        )
+        advantages_buffer.append(episode_advantages)
+        returns_buffer.append(episode_returns)
+        start_index = end_index
+    advantages = torch.cat(advantages_buffer)
+    returns = torch.cat(returns_buffer)
+
     # advantage normalization
     if len(advantages) > 1:
         advantages_normalized = (advantages - advantages.mean()) / (
-            advantages.std() + 1e-8
+            advantages.std(unbiased=False) + 1e-8
         )
     else:
         advantages_normalized = advantages
     actor_loss = -(log_probs_tensor * advantages_normalized.detach()).mean()
-    critic_loss = ((values - returns.detach()) ** 2).mean()
+    critic_loss = F.smooth_l1_loss(values, returns.detach(), beta=0.5)
     entropy = entropies.mean()
     total_loss = actor_loss + value_coef * critic_loss - entropy * entropy_coef
 
@@ -128,7 +175,7 @@ def update_actor_critic(
         "critic_loss": critic_loss.item(),
         "entropy": entropy.item(),
         "adv_mean": (advantages.mean().item()),
-        "adv_std": (advantages.std().item() if len(advantages) > 1 else 0.0),
+        "adv_std": (advantages.std(unbiased=False).item()),
         "return_mean": (returns.mean().item()),
         "value_mean": (values.detach().mean().item()),
         "grad_norm": float(grad_norm),
@@ -136,30 +183,25 @@ def update_actor_critic(
 
 
 # collect one trajectory
-def collect_episode(env: LineWorldEnv, model: ActorCriticNetwork):
+def collect_episode(env: gym.Env, model: ActorCriticNetwork):
     obs, _ = env.reset()
-    rewards = []
-    log_probs = []
-    values = []
-    entropies = []
-    terminated_buffer = []
-    obs_buffer = []
+    observations = []
     actions = []
+    rewards = []
+    terminated_buffer = []
+
     final_terminated = False
     final_truncated = False
     final_next_obs = None
 
     # first collect trajectory
     while True:
-        action, log_prob, value, entropy = select_action(model, obs)
+        action = select_action(model, obs)
         next_obs, reward, terminated, truncated, _ = env.step(action)
+        observations.append(obs.copy())
         actions.append(action)
-        rewards.append(reward)
-        log_probs.append(log_prob)  # each log_prob is a tensor
-        obs_buffer.append(obs)
-        values.append(value)
-        entropies.append(entropy)
-        terminated_buffer.append(terminated)
+        rewards.append(float(reward))
+        terminated_buffer.append(bool(terminated))
         obs = next_obs
         if terminated or truncated:
             final_terminated = terminated
@@ -168,13 +210,10 @@ def collect_episode(env: LineWorldEnv, model: ActorCriticNetwork):
             break
 
     return {
-        "rewards": rewards,
-        "log_probs": log_probs,
-        "values": values,
-        "entropies": entropies,
-        "terminated": terminated_buffer,
+        "observations": observations,
         "actions": actions,
-        "obs": obs,
+        "rewards": rewards,
+        "terminated": terminated_buffer,
         "final_next_obs": final_next_obs,
         "final_terminated": final_terminated,
         "final_truncated": final_truncated,
@@ -197,9 +236,13 @@ def compute_bootstrap_value(model: ActorCriticNetwork, trajectory: dict):
     return next_value.squeeze(0)
 
 
-def evaluate(env: LineWorldEnv, model: ActorCriticNetwork, num_episodes=100):
+def evaluate(env: gym.Env, model: ActorCriticNetwork, num_episodes=100):
     """
-    using sample in training while using argmax in testing
+    Evaluate the policy using deterministic greedy actions.
+
+    For CartPole:
+        terminated means failure;
+        truncated without termination means surviving until the time limit.
     """
     success_count = 0
     total_reward = 0.0
@@ -228,7 +271,7 @@ def evaluate(env: LineWorldEnv, model: ActorCriticNetwork, num_episodes=100):
                 ) = env.step(action)
                 episode_reward += reward
                 episode_steps += 1
-                if terminated:
+                if not terminated and truncated:
                     success_count += 1
                 if terminated or truncated:
                     break
@@ -248,74 +291,111 @@ def main():
     num_episodes = 2000
     gamma = 0.95
     gae_lambda = 0.95
-    value_coef = 0.5
-    entropy_coef = 0.01
-    learning_rate = 3e-4
+    value_coef = 0.1
+    entropy_coef = 0.001
+    learning_rate = 1e-3
+    episodes_per_update = 4
+    report_every = 100
+    eval_every = 200
 
     seed = 42
     random.seed(seed)
     torch.manual_seed(seed)
     np.random.seed(seed)
 
-    env = LineWorldEnv(max_steps=50)
+    env = make_cartpole_env(max_steps=200)
+    eval_env = make_cartpole_env(max_steps=200)
+
     env.reset(seed=seed)
-    model = ActorCriticNetwork(obs_dim=1, action_dim=2, critic_dim=1, hidden_dim=32)
+    env.action_space.seed(seed)
+
+    eval_env.reset(seed=seed + 10_000)
+    obs_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.n
+    model = ActorCriticNetwork(obs_dim, action_dim, critic_dim=1, hidden_dim=32)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
     recent_returns = []
     successes = []
-    for episode in range(1, num_episodes + 1):
-        # phase 1: rollout/sample
-        trajectory = collect_episode(env, model)
-        bootstrap_value = compute_bootstrap_value(model, trajectory)
-        # phase 2: model nework update
+    recent_returns = []
+    recent_lengths = []
+    successes = []
+    episodes_seen = 0
+    update_index = 0
+    while episodes_seen < num_episodes:
+        previous_episode_count = episodes_seen
+        training_progress = episodes_seen / num_episodes
+        current_learning_rate = learning_rate * (1.0 - training_progress)
+        for parameter_group in optimizer.param_groups:
+            parameter_group["lr"] = current_learning_rate
+        batch_size = min(episodes_per_update, num_episodes - episodes_seen)
+        trajectories = [collect_episode(env, model) for _ in range(batch_size)]
         stats = update_actor_critic(
             optimizer,
             model,
-            trajectory,
-            bootstrap_value,
+            trajectories,
             gamma,
             gae_lambda,
             value_coef,
             entropy_coef,
         )
-        episode_return = sum(trajectory["rewards"])
-        episode_length = len(trajectory["rewards"])
-        recent_returns.append(episode_return)
+        update_index += 1
+        episodes_seen += batch_size
 
-        if trajectory["final_terminated"]:
-            successes.append(1)
-        else:
-            successes.append(0)
-        if episode == 10 or episode % 100 == 0:
+        batch_returns = [sum(trajectory["rewards"]) for trajectory in trajectories]
+
+        batch_lengths = [len(trajectory["rewards"]) for trajectory in trajectories]
+
+        batch_successes = [
+            int(trajectory["final_truncated"] and not trajectory["final_terminated"])
+            for trajectory in trajectories
+        ]
+
+        recent_returns.extend(batch_returns)
+        recent_lengths.extend(batch_lengths)
+        successes.extend(batch_successes)
+
+        crossed_report_boundary = (
+            episodes_seen == num_episodes
+            or episodes_seen // report_every != previous_episode_count // report_every
+        )
+
+        if crossed_report_boundary:
             print(
-                f"Episode {episode:3d} | "
-                f"return={episode_return:7.2f} | "
-                f"length={episode_length:2d} | "
-                f"terminated={trajectory['final_terminated']} | "
-                f"truncated={trajectory['final_truncated']} | "
-                f"loss={stats['loss']:8.4f} | "
-                f"actor={stats['actor_loss']:8.4f} | "
-                f"critic={stats['critic_loss']:8.4f} | "
-                f"entropy={stats['entropy']:6.4f} | "
-                f"adv={stats['adv_mean']:7.3f} | "
-                f"value={stats['value_mean']:7.3f} | "
-                f"grad={stats['grad_norm']:7.3f}"
+                f"Update {update_index:3d} | "
+                f"episodes={episodes_seen:4d} | "
+                f"lr={current_learning_rate:.6f} | "
+                f"train_return={np.mean(recent_returns[-100:]):7.2f} | "
+                f"train_length={np.mean(recent_lengths[-100:]):6.2f} | "
+                f"train_success={np.mean(successes[-100:]):.3f} | "
+                f"actor={stats['actor_loss']:+.4f} | "
+                f"critic={stats['critic_loss']:.4f} | "
+                f"entropy={stats['entropy']:.4f} | "
+                f"adv_std={stats['adv_std']:.3f} | "
+                f"grad={stats['grad_norm']:.3f}"
             )
-        if episode % 200 == 0:
-            eval_stats = evaluate(env, model, num_episodes=100)
+
+        crossed_eval_boundary = (
+            episodes_seen == num_episodes
+            or episodes_seen // eval_every != previous_episode_count // eval_every
+        )
+
+        if crossed_eval_boundary:
+            eval_stats = evaluate(
+                eval_env,
+                model,
+                num_episodes=100,
+            )
+
             print(
-                f"[Eval] episode={episode:3d} | "
+                f"[Eval] episodes={episodes_seen:4d} | "
                 f"success_rate={eval_stats['success_rate']:.3f} | "
-                f"avg_reward={eval_stats['avg_reward']:.3f} | "
+                f"avg_reward={eval_stats['avg_reward']:.2f} | "
                 f"avg_steps={eval_stats['avg_steps']:.2f}"
             )
-        if episode % 200 == 0:
-            print(
-                f"[Train] episode={episode} | "
-                f"return_avg={np.mean(recent_returns[-20:]):.3f} | "
-                f"success_avg={np.mean(successes[-20:]):.3f}"
-            )
+
+    env.close()
+    eval_env.close()
 
 
 if __name__ == "__main__":
