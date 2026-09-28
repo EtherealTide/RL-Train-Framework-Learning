@@ -69,7 +69,6 @@ class LineWorldEnv(gym.Env):
         truncated = False
         if self.current_step >= self.max_steps:
             truncated = True
-            reward -= 5
 
         obs = np.array([self.position], dtype=np.float32)
         info = {"position": self.position}

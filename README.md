@@ -40,7 +40,19 @@ The goal is not merely calling pre-packaged APIs, but mastering the architectura
   - Implemented Monte Carlo REINFORCE policy loss.
   - Compared policy probabilities before and after training.
   - Evaluated deterministic success rate after policy optimization.
-
+- **Day 03: Actor-Critic & Generalized Advantage Estimation**
+  - Replaced the standalone policy network with a shared Actor-Critic architecture.
+  - Implemented state-value estimation V(s) using a critic head.
+  - Implemented one-step TD residual:
+    `delta_t = r_t + gamma * V(s_{t+1}) - V(s_t)`.
+  - Implemented reverse-scan Generalized Advantage Estimation (GAE).
+  - Used GAE advantages for policy-gradient updates.
+  - Trained the critic using bootstrapped value targets.
+  - Correctly distinguished Gymnasium `terminated` and `truncated`
+    semantics during value bootstrapping.
+  - Added advantage normalization, entropy bonus, and gradient clipping.
+  - Logged actor loss, critic loss, entropy, advantage statistics,
+    value estimates, success rate, and episode length.
 ---
 
 ## 🛠️ Repository Structure
@@ -49,6 +61,12 @@ The goal is not merely calling pre-packaged APIs, but mastering the architectura
 .
 ├── .gitignore
 ├── README.md
+├── requirements.txt        # Python dependencies for the project
+├── .github/
+│   └── workflows/
+│       └── ci.yml          # GitHub Actions CI workflow for linting and testing
 └── Gymnasium-MiniRL/
     ├── minimal_env.py      # Custom Gymnasium environment implementation
-    └── reinforce.py         # Minimal REINFORCE algorithm implementation
+    ├── reinforce.py         # Minimal REINFORCE algorithm implementation
+    └── actor_critic_gae.py  # Actor-Critic with GAE implementation
+```
