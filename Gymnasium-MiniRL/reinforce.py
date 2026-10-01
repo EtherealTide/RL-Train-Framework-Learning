@@ -314,9 +314,6 @@ def main():
     action_dim = env.action_space.n
     model = ActorCriticNetwork(obs_dim, action_dim, critic_dim=1, hidden_dim=32)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
-    recent_returns = []
-    successes = []
     recent_returns = []
     recent_lengths = []
     successes = []

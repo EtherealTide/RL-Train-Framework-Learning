@@ -10,6 +10,7 @@ def gae(rewards, values, terminated, bootstrap_value, gamma=0.95, gae_lambda=0.9
         bootstrap_value: torch
     output:
         advantages: torch list
+        returns: torch list
     """
     values_detached = values.detach()
     rewards_tensor = torch.as_tensor(rewards, dtype=torch.float32)
