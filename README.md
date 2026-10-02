@@ -64,32 +64,50 @@ The goal is not merely calling pre-packaged APIs, but mastering the architectura
       [Day 3 Improvement Report](Gymnasium-MiniRL/DAY3_IMPROVEMENT_REPORT.md).
 - **Day 04: Proximal Policy Optimization (PPO-Clip)**
   - Implemented PPO-Clip with a shared Actor-Critic network.
-  - Collected complete episodes until reaching a minimum rollout budget
-    of 1,024 environment steps.
-  - Computed GAE independently for each episode, with bootstrapping
-    for time-limit truncations and zero bootstrap for true terminations.
-  - Fixed old action log-probabilities, advantages, and value targets
-    before performing four full-batch updates per rollout.
-  - Added advantage normalization, entropy regularization, Huber value
-    loss, gradient clipping, and linear learning-rate decay.
+  - Collected fixed-length rollouts of exactly 1,024 environment steps,
+    preserving environment state and unfinished episode returns between rollouts.
+  - Recorded behavior-policy action log-probabilities and value estimates
+    during sampling under `torch.no_grad()`.
+  - Computed GAE before shuffling, with separate masks for value
+    bootstrapping and advantage continuation across episode boundaries.
+  - Bootstrapped time-limit truncations and unfinished rollout boundaries;
+    used zero bootstrap for true terminations.
+  - Reused the next step's stored value within uninterrupted trajectories,
+    avoiding redundant value-network evaluations.
+  - Trained for four epochs per rollout, reshuffling samples each epoch
+    into mini-batches of 256 transitions: 16 optimizer steps per rollout.
+  - Used mini-batch advantage normalization, entropy regularization,
+    Huber value loss, gradient clipping, and linear learning-rate decay.
   - Logged training returns, success rates, losses, policy entropy,
-    and clipping fraction.
-  - Evaluated the policy using deterministic greedy actions in a
-    separate CartPole-200 environment.
-    
+    clipping fraction, and pre-normalization advantage standard deviation.
+  - Evaluated greedy actions over 50 episodes in a separate CartPole-200
+    environment.
+
   **Experiment observations**
-  - Learning-rate decay alone did not eliminate performance regressions
-    with `gamma=0.95`.
-  - Increasing `gamma` to `0.99` while retaining learning-rate decay
-    improved late-training performance in the observed runs.
-  - In the final 300-iteration run, all 16 logged evaluations from
-    iteration 150 through 300 achieved a mean return of `200/200`,
-    a success rate of `100%`, and a return standard deviation of `0`.
-  - The run used 350,124 environment steps. Performance temporarily
-    regressed at iterations 130–140 before recovering.
-  - These results demonstrate success on CartPole with a 200-step
-    limit for this run; robustness across training seeds and the
-    independent contribution of learning-rate decay remain unverified.
+  - Switching from full-batch to mini-batch updates increased optimizer
+    steps per rollout from 4 to 16.
+  - Retaining the initial learning rate of `1e-3` produced repeated
+    performance regressions, including zero evaluation success in the
+    final logged evaluations.
+  - Reducing the initial learning rate to `3e-4`, while retaining
+    `gamma=0.99` and linear decay, improved late-training stability.
+  - In the final seed-42 run, all 20 logged evaluations from iteration
+    110 through 300 achieved `100%` success and a mean return of `200/200`.
+  - The run used exactly 307,200 environment steps. Intermediate
+    regressions still occurred, including at iterations 90–100.
+  - Logged mean pre-normalization advantage standard deviations remained
+    above 1; this run provided no evidence of near-zero advantage variance
+    being amplified by normalization.
+  - Results apply to this training seed and the 200-step environment limit;
+    robustness across training seeds has not yet been established.
+
+  **Architecture takeaway**
+  - Old log-probabilities must correspond to the policy that generated
+    each action. Recording them during collection avoids reconstructing
+    behavior-policy probabilities with potentially newer learner weights.
+  - The implementation remains synchronous and single-environment.
+    Distributed execution will additionally require policy-version
+    tracking and synchronization.
 ---
 
 ## 🛠️ Repository Structure
@@ -106,6 +124,6 @@ The goal is not merely calling pre-packaged APIs, but mastering the architectura
     ├── minimal_env.py                  # LineWorld and CartPole environment setup
     ├── reinforce.py                    # Batched GAE Actor-Critic training loop
     ├── actor_critic_gae.py             # Reverse-scan GAE implementation
-    ├── ppo.py                          # PPO-Clip training and evaluation on CartPole-200
+    ├── ppo.py                          # Fixed-length PPO rollouts and shuffled mini-batch updates
     └── DAY3_IMPROVEMENT_REPORT.md      # Detailed Day 3 experiment record
 ```
