@@ -108,6 +108,66 @@ The goal is not merely calling pre-packaged APIs, but mastering the architectura
   - The implementation remains synchronous and single-environment.
     Distributed execution will additionally require policy-version
     tracking and synchronization.
+
+- **Day 05: Soft Actor-Critic (SAC)**
+  - Implemented continuous-action SAC from scratch in PyTorch on `Pendulum-v1`.
+  - Built a circular replay buffer and sampled random mini-batches for
+    off-policy learning.
+  - Implemented a squashed Gaussian policy with reparameterized sampling,
+    action rescaling, and log-probability Jacobian correction.
+  - Implemented independent twin Q networks, target Q networks,
+    entropy-regularized Bellman targets, and Polyak soft updates.
+  - Optimized the actor through differentiable sampled actions and learned
+    the entropy temperature automatically.
+  - Preserved bootstrapping for time-limit truncations and disabled it
+    only for true terminations.
+  - Trained for 100,000 environment steps with seed 42, batch size 256,
+    `gamma=0.99`, `tau=0.005`, and learning rates of `3e-4`.
+
+  **Evaluation protocol**
+  - Evaluated deterministic actions every 5,000 training steps over
+    50 episodes, using the same episode seeds (10042–10091) at each checkpoint.
+  - Computed deterministic actions directly from the policy mean,
+    avoiding random sampling during evaluation.
+  - Defined a custom success criterion: all final 50 post-action states
+    must satisfy an absolute angle error below 10 degrees and an absolute
+    angular velocity below 0.5 rad/s.
+  - Logged mean episode return and its standard deviation, success rate,
+    whole-episode upright ratio, and mean reward over the final 50 steps.
+  - The success criterion is an evaluation metric, not an environment
+    termination condition.
+
+  **Experiment observations**
+
+  | Training steps | Evaluation return (mean ± std) | Success rate | Upright ratio | Final-50-step mean reward |
+  | ---: | ---: | ---: | ---: | ---: |
+  | 5,000 | -125.35 ± 88.27 | 100% | 84.8% | -0.0014 |
+  | 30,000 | -118.62 ± 69.10 | 0% | 28.5% | -0.0520 |
+  | 35,000 | -110.97 ± 67.76 | 100% | 83.9% | approximately 0 |
+  | 100,000 | -112.38 ± 67.31 | 100% | 79.2% | -0.0029 |
+
+  - All 14 logged evaluations from 35,000 through 100,000 steps achieved
+    100% success under the custom stability criterion.
+  - A temporary stability regression occurred at 30,000 steps despite
+    a relatively small change in total return, showing why return alone
+    does not fully describe balancing performance.
+  - At the final checkpoint, every evaluation episode met the stability
+    criterion, and the final-window reward was close to zero. Negative
+    total returns therefore remained compatible with successful swing-up
+    and balancing.
+  - Return standard deviations describe variation across evaluation
+    episodes, not across independent training runs.
+  - Results apply to one training seed and a fixed evaluation set;
+    robustness across training seeds and unseen initial states remains
+    untested.
+
+  **Architecture takeaway**
+  - SAC separates environment interaction from learning through a replay
+    buffer and reuses previously collected transitions.
+  - Critic targets, actor updates, entropy-temperature updates, and target
+    network updates have distinct gradient paths.
+  - The implementation remains synchronous and single-environment,
+    providing a baseline for later actor-learner separation.
 ---
 
 ## 🛠️ Repository Structure
@@ -125,5 +185,6 @@ The goal is not merely calling pre-packaged APIs, but mastering the architectura
     ├── reinforce.py                    # Batched GAE Actor-Critic training loop
     ├── actor_critic_gae.py             # Reverse-scan GAE implementation
     ├── ppo.py                          # Fixed-length PPO rollouts and shuffled mini-batch updates
+    ├── sac.py                          # Off-policy SAC and Pendulum stability evaluation
     └── DAY3_IMPROVEMENT_REPORT.md      # Detailed Day 3 experiment record
 ```
